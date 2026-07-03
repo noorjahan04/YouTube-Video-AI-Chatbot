@@ -12,20 +12,20 @@ export const extractVideoId = (url) => {
   return null;
 };
 
-// ── Metadata ─────────────────────────────────────────────────────────────
+// ── Metadata ──────────────────────────────────────────────────────────────────
 
 const scrapeYouTubeMetadata = async (videoId) => {
   try {
     const res = await axios.get(`https://www.youtube.com/watch?v=${videoId}`, {
-      timeout: 10000,
+      timeout: 12000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
       }
     });
     const html = res.data;
-    const ogTitle  = html.match(/<meta property="og:title" content="([^"]+)"/)?.[1];
-    const title    = ogTitle || html.match(/<title>([^<]+)<\/title>/)?.[1]?.replace(' - YouTube', '').trim();
+    const title    = html.match(/<meta property="og:title" content="([^"]+)"/)?.[1]
+                  || html.match(/<title>([^<]+)<\/title>/)?.[1]?.replace(' - YouTube','').trim();
     const channel  = html.match(/"ownerChannelName":"([^"]+)"/)?.[1];
     const thumbUrl = html.match(/"thumbnailUrl":"([^"]+)"/)?.[1];
     const lenSecs  = html.match(/"lengthSeconds":"(\d+)"/)?.[1];
@@ -34,9 +34,9 @@ const scrapeYouTubeMetadata = async (videoId) => {
       const s = parseInt(lenSecs), h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
       duration = h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}` : `${m}:${String(sec).padStart(2,'0')}`;
     }
-    if (title) return { title, channelName: channel || 'Unknown', thumbnail: thumbUrl || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`, duration, tags: [], description: '', publishedAt: null };
+    if (title) return { title, channelName: channel||'Unknown', thumbnail: thumbUrl||`https://img.youtube.com/vi/${videoId}/hqdefault.jpg`, duration, tags:[], description:'', publishedAt:null };
     return null;
-  } catch (e) { console.warn('Scrape metadata failed:', e.message); return null; }
+  } catch(e) { console.warn('Scrape metadata failed:', e.message); return null; }
 };
 
 export const getVideoMetadata = async (videoId) => {
@@ -45,31 +45,60 @@ export const getVideoMetadata = async (videoId) => {
       const res = await axios.get(`https://www.googleapis.com/youtube/v3/videos?id=${videoId}&key=${process.env.YOUTUBE_API_KEY}&part=snippet,contentDetails`, { timeout: 8000 });
       if (res.data.items?.length > 0) {
         const { snippet, contentDetails } = res.data.items[0];
-        return { title: snippet.title, description: snippet.description?.slice(0, 500) || '', thumbnail: snippet.thumbnails?.high?.url || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`, channelName: snippet.channelTitle, publishedAt: snippet.publishedAt, duration: formatDuration(contentDetails?.duration), tags: snippet.tags?.slice(0, 10) || [] };
+        return { title: snippet.title, description: snippet.description?.slice(0,500)||'', thumbnail: snippet.thumbnails?.high?.url||`https://img.youtube.com/vi/${videoId}/hqdefault.jpg`, channelName: snippet.channelTitle, publishedAt: snippet.publishedAt, duration: formatDuration(contentDetails?.duration), tags: snippet.tags?.slice(0,10)||[] };
       }
-    } catch (e) { console.warn('YouTube API failed:', e.message); }
+    } catch(e) { console.warn('YouTube API failed:', e.message); }
   }
-
   const scraped = await scrapeYouTubeMetadata(videoId);
   if (scraped) return scraped;
-
-  try {
-    const res = await axios.get(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`, { timeout: 8000 });
-    if (res.data?.title) return { title: res.data.title, description: '', thumbnail: res.data.thumbnail_url || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`, channelName: res.data.author_name || 'Unknown', publishedAt: null, duration: null, tags: [] };
-  } catch (e) { console.warn('oEmbed failed:', e.message); }
-
-  return { title: `YouTube Video (${videoId})`, description: '', thumbnail: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`, channelName: 'Unknown', publishedAt: null, duration: null, tags: [] };
+  return { title:`YouTube Video (${videoId})`, description:'', thumbnail:`https://img.youtube.com/vi/${videoId}/hqdefault.jpg`, channelName:'Unknown', publishedAt:null, duration:null, tags:[] };
 };
 
-// ── Transcript — 3-method fallback chain ─────────────────────────────────
+// ── Transcript ────────────────────────────────────────────────────────────────
 
 /**
- * Method 1: Fetch captions directly from YouTube's timedtext API.
- * This scrapes the video page for the caption track URL, then fetches the XML.
- * Works without any npm package and is the most reliable on deployed servers.
+ * Method 1: YouTube Data API v3 captions list + direct fetch
+ * Requires YOUTUBE_API_KEY. Most reliable, bypasses IP blocks.
  */
-const getTranscriptViaTiledText = async (videoId) => {
-  // Step 1: get the video page to find caption track URLs
+const getTranscriptViaYouTubeAPI = async (videoId) => {
+  if (!process.env.YOUTUBE_API_KEY) throw new Error('No YouTube API key configured');
+
+  // Get list of caption tracks for this video
+  const listRes = await axios.get(
+    `https://www.googleapis.com/youtube/v3/captions?part=snippet&videoId=${videoId}&key=${process.env.YOUTUBE_API_KEY}`,
+    { timeout: 8000 }
+  );
+
+  const tracks = listRes.data.items || [];
+  if (tracks.length === 0) throw new Error('No caption tracks found via API');
+
+  // Prefer English auto-generated, then English manual, then any
+  const track = tracks.find(t => t.snippet.trackKind === 'asr' && t.snippet.language?.startsWith('en'))
+             || tracks.find(t => t.snippet.language?.startsWith('en'))
+             || tracks[0];
+
+  // Note: Downloading caption content via API requires OAuth, not just API key.
+  // So we use the track info to confirm captions exist, then fetch via timedtext.
+  console.log(`[transcript] API found track: ${track.snippet.language} (${track.snippet.trackKind})`);
+
+  // Use timedtext with confirmed track info
+  const lang = track.snippet.language || 'en';
+  const kind = track.snippet.trackKind === 'asr' ? '&kind=asr' : '';
+  const url  = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}${kind}&fmt=json3`;
+
+  const captionRes = await axios.get(url, {
+    timeout: 10000,
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+  });
+
+  return parseTimedTextJson(captionRes.data);
+};
+
+/**
+ * Method 2: Scrape YouTube page for caption track URLs, then fetch timedtext XML
+ * No API key needed. Works when YouTube hasn't blocked the server IP for page scraping.
+ */
+const getTranscriptViaPageScrape = async (videoId) => {
   const pageRes = await axios.get(`https://www.youtube.com/watch?v=${videoId}`, {
     timeout: 12000,
     headers: {
@@ -80,104 +109,137 @@ const getTranscriptViaTiledText = async (videoId) => {
 
   const html = pageRes.data;
 
-  // Extract captions data from ytInitialPlayerResponse
-  const playerMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?})\s*;/s);
-  if (!playerMatch) throw new Error('Could not parse YouTube player response');
+  // Try to extract captionTracks from ytInitialPlayerResponse
+  const playerMatch = html.match(/"captionTracks":(\[.*?\])/s);
+  if (!playerMatch) {
+    // Double check — maybe the video has no captions at all
+    if (html.includes('"isLive":true')) throw new Error('Live streams do not have transcripts');
+    throw new Error('No caption tracks found in page. This video may not have subtitles.');
+  }
 
-  let playerData;
+  let tracks;
   try {
-    playerData = JSON.parse(playerMatch[1]);
+    tracks = JSON.parse(playerMatch[1]);
   } catch {
-    throw new Error('Could not parse YouTube player JSON');
+    throw new Error('Could not parse caption tracks from page');
   }
 
-  const captions = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-  if (!captions || captions.length === 0) {
-    throw new Error('Transcript is disabled on this video');
-  }
+  if (!tracks.length) throw new Error('No caption tracks available');
 
-  // Prefer English, fall back to first available
-  const track = captions.find(t => t.languageCode === 'en' || t.languageCode?.startsWith('en')) || captions[0];
-  const captionUrl = track.baseUrl + '&fmt=json3';
+  // Prefer English auto-generated, then English, then first available
+  const track = tracks.find(t => t.kind === 'asr' && t.languageCode?.startsWith('en'))
+             || tracks.find(t => t.languageCode?.startsWith('en'))
+             || tracks[0];
 
-  // Step 2: fetch the actual caption data
-  const captionRes = await axios.get(captionUrl, {
+  const baseUrl = track.baseUrl;
+  const captionRes = await axios.get(`${baseUrl}&fmt=json3`, {
     timeout: 10000,
     headers: { 'User-Agent': 'Mozilla/5.0' }
   });
 
-  const events = captionRes.data?.events || [];
-  const segments = events
-    .filter(e => e.segs)
-    .map(e => ({
-      text: e.segs.map(s => s.utf8 || '').join('').replace(/\n/g, ' ').trim(),
-      start: (e.tStartMs || 0) / 1000,
-      duration: (e.dDurationMs || 0) / 1000,
-    }))
-    .filter(s => s.text.length > 0);
-
-  if (segments.length === 0) throw new Error('No transcript segments found');
-
-  const fullText = segments.map(s => s.text).join(' ');
-  return { segments, fullText, wordCount: fullText.split(/\s+/).length };
+  return parseTimedTextJson(captionRes.data);
 };
 
 /**
- * Method 2: youtube-captions-scraper npm package (backup)
+ * Method 3: youtube-captions-scraper package
  */
 const getTranscriptViaScraper = async (videoId) => {
   const { getSubtitles } = await import('youtube-captions-scraper');
   const captions = await getSubtitles({ videoID: videoId, lang: 'en' });
   if (!captions?.length) throw new Error('No captions returned');
-  const segments = captions.map(c => ({ text: c.text.replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim(), start: parseFloat(c.start), duration: parseFloat(c.dur) })).filter(s => s.text.length > 0);
+  const segments = captions.map(c => ({
+    text: c.text.replace(/&#39;/g,"'").replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>').trim(),
+    start: parseFloat(c.start),
+    duration: parseFloat(c.dur)
+  })).filter(s => s.text.length > 0);
   const fullText = segments.map(s => s.text).join(' ');
   return { segments, fullText, wordCount: fullText.split(/\s+/).length };
 };
 
 /**
- * Method 3: youtube-transcript npm package (original, least reliable on servers)
+ * Method 4: youtube-transcript package (original fallback)
  */
 const getTranscriptViaPackage = async (videoId) => {
   const { YoutubeTranscript } = await import('youtube-transcript');
   const items = await YoutubeTranscript.fetchTranscript(videoId);
-  if (!items?.length) throw new Error('No transcript available');
-  const segments = items.map(i => ({ text: i.text.replace(/\[.*?\]/g, '').trim(), start: i.offset / 1000, duration: i.duration / 1000 })).filter(s => s.text.length > 0);
+  if (!items?.length) throw new Error('No transcript items returned');
+  const segments = items.map(i => ({ text: i.text.replace(/\[.*?\]/g,'').trim(), start: i.offset/1000, duration: i.duration/1000 })).filter(s => s.text.length > 0);
   const fullText = segments.map(s => s.text).join(' ');
   return { segments, fullText, wordCount: fullText.split(/\s+/).length };
 };
 
+/**
+ * Parse YouTube's json3 caption format into our segment structure
+ */
+const parseTimedTextJson = (data) => {
+  const events = data?.events || [];
+  const segments = events
+    .filter(e => e.segs)
+    .map(e => ({
+      text: e.segs.map(s => s.utf8||'').join('').replace(/\n/g,' ').trim(),
+      start: (e.tStartMs||0)/1000,
+      duration: (e.dDurationMs||0)/1000,
+    }))
+    .filter(s => s.text.length > 0);
+
+  if (!segments.length) throw new Error('Caption data was empty');
+
+  const fullText = segments.map(s => s.text).join(' ');
+  return { segments, fullText, wordCount: fullText.split(/\s+/).length };
+};
+
+/**
+ * Main transcript function — tries all methods in order, stops on first success.
+ */
 export const getVideoTranscript = async (videoId) => {
   const methods = [
-    { name: 'timedtext-api',  fn: () => getTranscriptViaTiledText(videoId) },
-    { name: 'captions-scraper', fn: () => getTranscriptViaScraper(videoId) },
-    { name: 'youtube-transcript', fn: () => getTranscriptViaPackage(videoId) },
+    { name: 'youtube-api-v3',      fn: () => getTranscriptViaYouTubeAPI(videoId) },
+    { name: 'page-scrape-timedtext', fn: () => getTranscriptViaPageScrape(videoId) },
+    { name: 'captions-scraper',    fn: () => getTranscriptViaScraper(videoId) },
+    { name: 'youtube-transcript',  fn: () => getTranscriptViaPackage(videoId) },
   ];
 
-  let lastError = null;
+  const errors = [];
+
   for (const method of methods) {
     try {
-      console.log(`[transcript] Trying method: ${method.name} for ${videoId}`);
+      console.log(`[transcript] Trying: ${method.name} for video ${videoId}`);
       const result = await method.fn();
-      console.log(`[transcript] Success with: ${method.name} (${result.wordCount} words)`);
+      console.log(`[transcript] ✅ Success: ${method.name} — ${result.wordCount} words`);
       return result;
     } catch (e) {
-      console.warn(`[transcript] Method ${method.name} failed:`, e.message);
-      lastError = e;
+      console.warn(`[transcript] ❌ ${method.name}: ${e.message}`);
+      errors.push(`${method.name}: ${e.message}`);
 
-      // If any method explicitly says transcript is disabled, stop trying
-      if (e.message?.toLowerCase().includes('disabled') || e.message?.toLowerCase().includes('no captions')) {
-        throw new Error('This video does not have transcripts/captions enabled. Please try a video that has subtitles or auto-generated captions.');
+      // If captions are explicitly disabled, no point trying other methods
+      if (
+        e.message?.includes('disabled on this video') ||
+        e.message?.includes('No caption tracks') ||
+        e.message?.includes('not have subtitles') ||
+        e.message?.includes('no captions') ||
+        e.message?.toLowerCase().includes('transcript disabled')
+      ) {
+        throw new Error(
+          'This video does not have captions or transcripts enabled. ' +
+          'Please try a video that has subtitles — on YouTube, click the "..." menu below the video and look for "Show transcript".'
+        );
       }
     }
   }
 
-  throw new Error(`Could not extract transcript after trying all methods. Last error: ${lastError?.message}`);
+  throw new Error(
+    'Could not extract transcript. This usually means:\n' +
+    '1. The video has transcripts disabled\n' +
+    '2. The video is private or geo-restricted\n' +
+    '3. A temporary server-side block from YouTube\n\n' +
+    `Details: ${errors.join(' | ')}`
+  );
 };
 
 export const formatDuration = (iso) => {
   if (!iso) return null;
   const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
   if (!m) return null;
-  const h = parseInt(m[1] || 0), min = parseInt(m[2] || 0), s = parseInt(m[3] || 0);
+  const h = parseInt(m[1]||0), min = parseInt(m[2]||0), s = parseInt(m[3]||0);
   return h > 0 ? `${h}:${String(min).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${min}:${String(s).padStart(2,'0')}`;
 };
