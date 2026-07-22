@@ -3,21 +3,41 @@ import { api } from '../lib/api'
 import { useToast } from '../context/ToastContext'
 import Icon from '../components/Icon'
 
+const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/
+
+const passwordChecks = (password) => ([
+  { label: 'At least 8 characters',   pass: password.length >= 8 },
+  { label: 'One uppercase letter',    pass: /[A-Z]/.test(password) },
+  { label: 'One lowercase letter',    pass: /[a-z]/.test(password) },
+  { label: 'One number',              pass: /[0-9]/.test(password) },
+])
+
 export default function AuthPage({ initialMode = 'signin', onAuth, onBack }) {
   const [mode, setMode]         = useState(initialMode)
   const [form, setForm]         = useState({ name:'', email:'', password:'' })
+  const [touched, setTouched]   = useState({ email:false, password:false })
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState('')
   const [showPass, setShowPass] = useState(false)
   const { toast } = useToast()
 
   const handle = e => setForm(f => ({ ...f, [e.target.name]: e.target.value }))
+  const blur   = e => setTouched(t => ({ ...t, [e.target.name]: true }))
+
+  const emailValid = form.email.length === 0 || EMAIL_REGEX.test(form.email.trim())
+  const checks = passwordChecks(form.password)
+  const passwordValid = mode === 'signin' ? form.password.length > 0 : checks.every(c => c.pass)
+  const canSubmit = form.email.trim().length > 0 && EMAIL_REGEX.test(form.email.trim())
+    && passwordValid && (mode === 'signin' || form.name.trim().length > 0)
 
   const submit = async e => {
-    e.preventDefault(); setLoading(true); setError('')
+    e.preventDefault()
+    setTouched({ email:true, password:true })
+    if (!canSubmit) { setError('Please fix the highlighted fields before continuing.'); return }
+    setLoading(true); setError('')
     try {
       const endpoint = mode === 'signup' ? '/auth/signup' : '/auth/signin'
-      const payload  = mode === 'signup' ? { name:form.name, email:form.email, password:form.password } : { email:form.email, password:form.password }
+      const payload  = mode === 'signup' ? { name:form.name.trim(), email:form.email.trim(), password:form.password } : { email:form.email.trim(), password:form.password }
       const data = await api.post(endpoint, payload)
       onAuth(data.token, data.user)
       toast(mode === 'signup' ? `Welcome, ${data.user.name}! 🎉` : `Welcome back, ${data.user.name}!`, 'success')
@@ -102,23 +122,40 @@ export default function AuthPage({ initialMode = 'signin', onAuth, onBack }) {
 
           <div>
             <label style={{ display:'block', color:'var(--text)', fontSize:14, fontWeight:600, marginBottom:8 }}>Email address</label>
-            <input name="email" type="email" value={form.email} onChange={handle} placeholder="you@example.com" required
-              style={{ width:'100%', padding:'14px 16px', borderRadius:'var(--radius-md)', border:'1.5px solid var(--border)', background:'var(--bg-input)', color:'var(--text)', fontSize:15, outline:'none', transition:'all 0.2s', boxSizing:'border-box' }} />
+            <input name="email" type="email" value={form.email} onChange={handle} onBlur={blur} placeholder="you@example.com" required
+              style={{ width:'100%', padding:'14px 16px', borderRadius:'var(--radius-md)', border: `1.5px solid ${touched.email && !emailValid ? 'var(--coral)' : 'var(--border)'}`, background:'var(--bg-input)', color:'var(--text)', fontSize:15, outline:'none', transition:'all 0.2s', boxSizing:'border-box' }} />
+            {touched.email && !emailValid && (
+              <p style={{ color:'var(--coral)', fontSize:13, marginTop:6 }}>Please enter a valid email address</p>
+            )}
           </div>
 
           <div>
             <label style={{ display:'block', color:'var(--text)', fontSize:14, fontWeight:600, marginBottom:8 }}>Password</label>
             <div style={{ position:'relative' }}>
-              <input name="password" type={showPass?'text':'password'} value={form.password} onChange={handle} placeholder="Min. 6 characters" required minLength={6}
-                style={{ width:'100%', padding:'14px 16px', paddingRight:50, borderRadius:'var(--radius-md)', border:'1.5px solid var(--border)', background:'var(--bg-input)', color:'var(--text)', fontSize:15, outline:'none', transition:'all 0.2s', boxSizing:'border-box' }} />
+              <input name="password" type={showPass?'text':'password'} value={form.password} onChange={handle} onBlur={blur}
+                placeholder={mode === 'signup' ? 'Min. 8 characters' : 'Enter your password'} required minLength={mode === 'signup' ? 8 : undefined}
+                style={{ width:'100%', padding:'14px 16px', paddingRight:50, borderRadius:'var(--radius-md)', border: `1.5px solid ${touched.password && !passwordValid ? 'var(--coral)' : 'var(--border)'}`, background:'var(--bg-input)', color:'var(--text)', fontSize:15, outline:'none', transition:'all 0.2s', boxSizing:'border-box' }} />
               <button type="button" onClick={() => setShowPass(!showPass)} style={{ position:'absolute', right:14, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--text-sub)', cursor:'pointer', display:'flex', padding:4 }}>
                 <Icon name={showPass?'eyeOff':'eye'} size={17} />
               </button>
             </div>
+
+            {mode === 'signup' && (form.password.length > 0 || touched.password) && (
+              <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:5 }}>
+                {checks.map((c, i) => (
+                  <div key={i} style={{ display:'flex', alignItems:'center', gap:8, fontSize:12.5, color: c.pass ? 'var(--accent)' : 'var(--text-sub)' }}>
+                    <span style={{ width:14, height:14, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, background: c.pass ? 'var(--accent)' : 'transparent', border: c.pass ? 'none' : '1.5px solid var(--border)' }}>
+                      {c.pass && <Icon name="check" size={9} style={{ color:'white' }} />}
+                    </span>
+                    {c.label}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
-          <button type="submit" disabled={loading}
-            style={{ padding:'15px', borderRadius:'var(--radius-md)', border:'none', background: loading ? 'var(--accent-dark)' : 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%)', color:'white', fontSize:16, fontWeight:700, cursor: loading?'default':'pointer', transition:'all 0.2s', boxShadow: loading?'none':'0 4px 16px rgba(13,148,136,0.35)', marginTop:4 }}>
+          <button type="submit" disabled={loading || (touched.email && touched.password && !canSubmit)}
+            style={{ padding:'15px', borderRadius:'var(--radius-md)', border:'none', background: loading ? 'var(--accent-dark)' : (touched.email && touched.password && !canSubmit) ? 'var(--border)' : 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%)', color:'white', fontSize:16, fontWeight:700, cursor: (loading || (touched.email && touched.password && !canSubmit))?'default':'pointer', transition:'all 0.2s', boxShadow: loading?'none':'0 4px 16px rgba(13,148,136,0.35)', marginTop:4 }}>
             {loading ? 'One moment…' : mode === 'signup' ? 'Create account →' : 'Sign in →'}
           </button>
         </form>

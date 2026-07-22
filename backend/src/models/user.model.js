@@ -3,8 +3,8 @@ import bcrypt from 'bcryptjs';
 
 const userSchema = new mongoose.Schema({
   name: { type: String, required: [true, 'Name is required'], trim: true, maxlength: 50 },
-  email: { type: String, required: [true, 'Email is required'], unique: true, lowercase: true, trim: true, match: [/^\S+@\S+\.\S+$/, 'Invalid email'] },
-  password: { type: String, required: [true, 'Password is required'], minlength: 6, select: false },
+  email: { type: String, required: [true, 'Email is required'], unique: true, lowercase: true, trim: true, match: [/^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/, 'Invalid email'] },
+  password: { type: String, required: [true, 'Password is required'], minlength: [8, 'Password must be at least 8 characters'], select: false },
   preferences: {
     theme: { type: String, enum: ['light', 'dark'], default: 'light' },
     language: { type: String, default: 'en' }
