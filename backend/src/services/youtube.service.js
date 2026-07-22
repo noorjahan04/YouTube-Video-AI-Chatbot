@@ -39,6 +39,7 @@ const scrapeYouTubeMetadata = async (videoId) => {
   } catch(e) { console.warn('Scrape metadata failed:', e.message); return null; }
 };
 
+
 export const getVideoMetadata = async (videoId) => {
   if (process.env.YOUTUBE_API_KEY) {
     try {
@@ -55,6 +56,50 @@ export const getVideoMetadata = async (videoId) => {
 };
 
 // ── Transcript ────────────────────────────────────────────────────────────────
+
+/**
+ * Method 0: Supadata transcript API.
+ * Requires SUPADATA_KEY. Handles YouTube IP-blocking on datacenter hosts (Render,
+ * Vercel, etc.) via its own residential-proxy rotation, so this is the primary
+ * method in production. Sign up at https://supadata.ai for a free API key.
+ */
+const getTranscriptViaSupadata = async (videoId) => {
+  if (!process.env.SUPADATA_KEY) throw new Error('No Supadata API key configured');
+
+  const res = await axios.get('https://api.supadata.ai/v1/youtube/transcript', {
+    params: { videoId, text: false },
+    headers: { 'x-api-key': process.env.SUPADATA_KEY },
+    timeout: 20000,
+  });
+
+  const content = res.data?.content;
+
+  // text:false returns an array of { text, offset(ms), duration(ms), lang }
+  if (Array.isArray(content) && content.length) {
+    const segments = content
+      .map(c => ({
+        text: (c.text || '').replace(/\n/g, ' ').trim(),
+        start: (c.offset || 0) / 1000,
+        duration: (c.duration || 0) / 1000,
+      }))
+      .filter(s => s.text.length > 0);
+    if (!segments.length) throw new Error('Supadata returned empty transcript');
+    const fullText = segments.map(s => s.text).join(' ');
+    return { segments, fullText, wordCount: fullText.split(/\s+/).length };
+  }
+
+  // Some responses return content as a single plain-text string
+  if (typeof content === 'string' && content.trim().length) {
+    const fullText = content.trim();
+    return {
+      segments: [{ text: fullText, start: 0, duration: 0 }],
+      fullText,
+      wordCount: fullText.split(/\s+/).length,
+    };
+  }
+
+  throw new Error('Supadata returned no transcript content');
+};
 
 /**
  * Method 1: YouTube Data API v3 captions list + direct fetch
@@ -193,6 +238,7 @@ const parseTimedTextJson = (data) => {
  */
 export const getVideoTranscript = async (videoId) => {
   const methods = [
+    { name: 'supadata',            fn: () => getTranscriptViaSupadata(videoId) },
     { name: 'youtube-api-v3',      fn: () => getTranscriptViaYouTubeAPI(videoId) },
     { name: 'page-scrape-timedtext', fn: () => getTranscriptViaPageScrape(videoId) },
     { name: 'captions-scraper',    fn: () => getTranscriptViaScraper(videoId) },
